@@ -243,29 +243,35 @@ async def extract_posts_from_dom(page, page_name):
                     const t = (b.innerText || '').trim().toLowerCase();
                     return t === 'like' || t === 'comment' || t === 'share';
                 });
-                // Proactively remove all nested articles (which are comments)
-                const nestedArticles = Array.from(clone.querySelectorAll('div[role="article"]'));
-                nestedArticles.forEach(na => {
-                    if (na !== clone) na.remove();
-                });
-                
-                // Also remove anything with a comment-like aria-label
-                const commentLabels = Array.from(clone.querySelectorAll('*')).filter(node => {
-                    const label = node.getAttribute('aria-label') || '';
-                    return /comment by/i.test(label) || /reply by/i.test(label) || label.includes('留言');
-                });
-                commentLabels.forEach(c => c.remove());
 
-                // Try to find the action buttons to prune the rest of the comments section
-                let actionBtn = Array.from(clone.querySelectorAll('div[role="button"]')).find(b => {
-                    const t = (b.innerText || '').toLowerCase();
-                    return t.includes('like') || t.includes('赞') || t.includes('讚') || t.includes('suka') || 
-                           t.includes('comment') || t.includes('评论') || t.includes('留言') || t.includes('komen') || 
-                           t.includes('share') || t.includes('分享') || t.includes('kongsi');
-                });
-                
                 if (actionBtn) {
                     pruneFromBoundaryOnward(clone, actionBtn);
+                    
+                    // Attempt to specifically target the post text without the header
+                    // (author name, timestamp) by finding the longest text container.
+                    const autoDirs = Array.from(clone.querySelectorAll('div[dir="auto"]'));
+                    if (autoDirs.length > 0) {
+                        let longest = autoDirs.reduce((a, b) => 
+                            (a.innerText || '').length > (b.innerText || '').length ? a : b
+                        );
+                        
+                        // To avoid truncating multi-paragraph posts (where each paragraph is its own div[dir="auto"]),
+                        // we grab the parent container of the longest paragraph.
+                        let body = longest.parentElement;
+                        // Sometimes we need to go up one more level if it's deeply nested
+                        if (body && body.parentElement && body.parentElement !== clone) {
+                            body = body.parentElement;
+                        }
+                        
+                        const cleanText = (body.innerText || '').trim();
+                        if (cleanText.length > 10) {
+                            return { text: cleanText, method: 'action-row-text-dir-auto-parent' };
+                        }
+                    }
+
+                    // Ultimate fallback: return everything that was left after pruning
+                    return { text: (clone.innerText || '').trim(), method: 'action-row-text' };
+                }
 
                 // Fallback 3: no action-bar found at all (unexpected layout) --
                 // remove obviously comment-related regions as a best effort.
