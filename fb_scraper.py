@@ -275,11 +275,39 @@ async def extract_posts_from_dom(page, page_name):
                 }
 
                 // Fallback 3: no action-bar found at all (unexpected layout) --
-                // remove obviously comment-related regions as a best effort.
-                const killSelectors = ['form', '[aria-label*="omment" i]', '[aria-label*="eply" i]'];
+                // Aggressively remove comments (role=article), nested posts (aria-posinset),
+                // forms (comment boxes), and aria-label comment/reply indicators.
+                const killSelectors = [
+                    'form',
+                    '[role="article"]',
+                    '[aria-posinset]',
+                    '[aria-label*="omment" i]',
+                    '[aria-label*="eply" i]'
+                ];
                 killSelectors.forEach(sel => {
                     clone.querySelectorAll(sel).forEach(node => node.remove());
                 });
+                // After removing comments, try the message container first
+                const msgNode2 = clone.querySelector(
+                    'div[data-ad-preview="message"], div[data-ad-comet-preview="message"]'
+                );
+                if (msgNode2) {
+                    const t2 = (msgNode2.innerText || '').trim();
+                    if (t2.length > 5) return { text: t2, method: 'aria-label-strip-msg' };
+                }
+                // Otherwise grab the longest dir=auto block
+                const autoDirs2 = Array.from(clone.querySelectorAll('div[dir="auto"]'));
+                if (autoDirs2.length > 0) {
+                    let longest2 = autoDirs2.reduce((a, b) =>
+                        (a.innerText || '').length > (b.innerText || '').length ? a : b
+                    );
+                    let body2 = longest2.parentElement || longest2;
+                    if (body2 && body2.parentElement && body2.parentElement !== clone) {
+                        body2 = body2.parentElement;
+                    }
+                    const t3 = (body2.innerText || '').trim();
+                    if (t3.length > 5) return { text: t3, method: 'aria-label-strip' };
+                }
                 return { text: (clone.innerText || '').trim(), method: 'aria-label-strip' };
             };
 
@@ -367,6 +395,29 @@ async def extract_posts_from_dom(page, page_name):
     for item in raw_posts:
         text = (item.get("text") or "").strip()
         if not text:
+            continue
+
+        # Filter out Facebook navigation boilerplate: text made up mostly of
+        # repeated "Facebook" strings (nav bars, footers, etc.)
+        fb_word_count = text.count("Facebook")
+        if fb_word_count >= 5:
+            continue
+
+        # Filter out "See less" / "See more" artifacts left over from expansion
+        text = re.sub(r'\bSee (more|less)\b', '', text).strip()
+
+        # Filter entries that look like scraped comments rather than posts.
+        # A genuine confession post almost always:
+        #   - starts with a #TC / #Confession hashtag, OR
+        #   - is multi-word (more than 5 words) with sentence-like structure
+        # A stray comment tends to be short and starts with a person's name.
+        # We skip entries that are very short (<20 chars) and have no hashtag.
+        if len(text) < 20 and not re.search(r'#[A-Za-z0-9]', text):
+            continue
+
+        # Filter shared-post stubs that have no real body (e.g. "转发自 ..."
+        # or "Updated their status" with no user-written content)
+        if re.match(r'^(转发自|Updated|Shared)', text) and '\n' not in text and len(text) < 60:
             continue
 
         href = item.get("url")
