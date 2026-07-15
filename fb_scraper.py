@@ -141,9 +141,11 @@ async def extract_posts_from_dom(page, page_name):
     hashtag, message text, reaction count). This sidesteps guessing at
     comment-container selectors entirely.
     """
-    raw_result = await page.evaluate(
-        """
-        () => {
+    from playwright._impl._errors import Error as PlaywrightError
+    try:
+        raw_result = await page.evaluate(
+            """
+            () => {
             const selectors = [
                 'div[role="feed"] div[aria-posinset]',
                 'div[role="main"] div[aria-posinset]',
@@ -364,8 +366,14 @@ async def extract_posts_from_dom(page, page_name):
                 }
             };
         }
-        """
-    )
+            """
+        )
+    except Exception as exc:
+        err_str = str(exc)
+        if "Execution context was destroyed" in err_str or "navigation" in err_str.lower():
+            print("  [debug] Page navigated during evaluate() -- skipping this iteration.")
+            return []
+        raise
 
     raw_posts = raw_result["posts"]
     debug_info = raw_result["debug"]
@@ -495,7 +503,16 @@ async def scrape_page(page, page_url, post_limit):
 
     while len(collected) < post_limit and stagnant_scrolls < max_stagnant_scrolls:
         await expand_see_more(page)
-        new_posts = await extract_posts_from_dom(page, page_name)
+        try:
+            new_posts = await extract_posts_from_dom(page, page_name)
+        except Exception as exc:
+            err_str = str(exc)
+            if "Execution context was destroyed" in err_str or "navigation" in err_str.lower():
+                print("  [debug] Navigation error during extraction -- waiting and retrying.")
+                await page.wait_for_timeout(2000)
+                stagnant_scrolls += 1
+                continue
+            raise
 
         added = 0
         for post in new_posts:
